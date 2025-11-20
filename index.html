@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>✨ Magic Digit Predictor ✨</title>
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      background: linear-gradient(135deg, #6a11cb, #2575fc);
+      color: white;
+    }
+    .card {
+      background: rgba(255,255,255,0.15);
+      padding: 25px;
+      border-radius: 18px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+      animation: fadeIn 1s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    h1 {
+      margin: 0 0 15px 0;
+      font-size: 32px;
+      text-shadow: 2px 2px 8px rgba(0,0,0,0.3);
+    }
+    #draw-area {
+      border: 3px solid white;
+      background: #000;
+      cursor: crosshair;
+      border-radius: 12px;
+      animation: glow 3s infinite alternate;
+    }
+    @keyframes glow {
+      from { box-shadow: 0 0 10px #fff; }
+      to { box-shadow: 0 0 25px #00eaff; }
+    }
+    .controls { margin-top: 10px; display: flex; gap: 10px; justify-content:center; }
+    button {
+      padding: 10px 18px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+      transition: transform .2s;
+    }
+    button:hover { transform: scale(1.07); }
+    .primary { background:#00d2ff; color:#000; }
+    .ghost { background:#fff; color:#000; }
+    #result { margin-top: 12px; font-weight: 700; font-size: 22px; }
+    #feedback { margin-top: 10px; font-size: 18px; font-weight:600; color: #ffd000; }
+    .bar { height: 10px; background:white; border-radius: 6px; margin: 6px 0; overflow: hidden; }
+    .bar > .fill { height: 100%; background:#00eaff; width: 0%; border-radius: 6px; transition: width .4s ease; }
+    .label-row { display:flex; justify-content:space-between; font-size:14px; color:white; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>✨ Magic Digit Predictor ✨</h1>
+    <canvas id="draw-area" width="280" height="280"></canvas>
+    <div class="controls">
+      <button id="clear" class="ghost">Clear</button>
+      <button id="predict" class="primary">Predict</button>
+    </div>
+    <div id="result">Prediction: -</div>
+    <div id="feedback"></div>
+    <div id="conf"></div>
+  </div>
+
+ <audio id="correctSound" crossorigin="anonymous" preload="auto" src="https://cdn.jsdelivr.net/gh/naptestdev/sfx/correct.mp3"></audio>
+  <audio id ="wrongSound" crossorigin="anonymous" preload="auto" src="https://cdn.jsdelivr.net/gh/naptestdev/sfx/wrong.mp3"></audio>
+
+  <script>
+    const canvas = document.getElementById("draw-area");
+    const ctx = canvas.getContext("2d");
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 20;
+    ctx.lineCap = "round";
+
+    let drawing = false;
+
+    function getPos(e){
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return { x: clientX - rect.left, y: clientY - rect.top };
+    }
+
+    canvas.addEventListener("mousedown", () => drawing = true);
+    canvas.addEventListener("mouseup", () => { drawing=false; ctx.beginPath(); });
+    canvas.addEventListener("mousemove", draw);
+
+    canvas.addEventListener("touchstart", e => { drawing = true; draw(e); e.preventDefault(); });
+    canvas.addEventListener("touchend", () => { drawing=false; ctx.beginPath(); });
+    canvas.addEventListener("touchmove", draw);
+
+    function draw(e) {
+      if (!drawing) return;
+      const pos = getPos(e);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y);
+    }
+
+    document.getElementById("clear").onclick = () => {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.beginPath();
+      document.getElementById("result").textContent = "Prediction: -";
+      document.getElementById("conf").innerHTML = '';
+      document.getElementById("feedback").textContent = '';
+    };
+
+    function extractPixels() {
+      const scaled = document.createElement("canvas");
+      scaled.width = 28;
+      scaled.height = 28;
+      const sctx = scaled.getContext("2d");
+      sctx.drawImage(canvas, 0, 0, 28, 28);
+      const imgData = sctx.getImageData(0, 0, 28, 28);
+      const data = [];
+      for (let i = 0; i < imgData.data.length; i += 4) {
+        const gray = 1 - (imgData.data[i] + imgData.data[i+1] + imgData.data[i+2]) / (3*255);
+        data.push(gray);
+      }
+      return data;
+    }
+
+    async function predict() {
+      const pixels = extractPixels();
+      try {
+        const res = await fetch('/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pixels })
+        });
+        const json = await res.json();
+
+        const resultBox = document.getElementById("result");
+        const feedback = document.getElementById("feedback");
+
+        if (json.error) {
+          resultBox.textContent = "Error: " + json.error;
+          return;
+        }
+
+        const predicted = json.prediction;
+        resultBox.textContent = "Prediction: " + predicted;
+        renderConfidences(json.confidences);
+
+        const maxConf = Math.max(...json.confidences);
+        if (maxConf < 0.55) {
+          feedback.textContent = "⚠️ The model is not very confident. Try drawing clearer!";
+          document.getElementById('wrongSound').play();
+        } else {
+          feedback.textContent = "✅ Great! The model is confident.";
+          document.getElementById('correctSound').play();
+        }
+
+      } catch (err) { 
+        document.getElementById("result").textContent = "Error: " + err;
+      }
+    }
+
+    function renderConfidences(conf) {
+      const container = document.getElementById("conf");
+      container.innerHTML = '';
+      for (let i = 0; i < conf.length; i++) {
+        const pct = Math.round(conf[i] * 100);
+        const div = document.createElement('div');
+        div.innerHTML = `<div class="label-row"><span>Class ${i}</span><span>${pct}%</span></div><div class="bar"><div class="fill" style="width:${pct}%"></div></div>`;
+        container.appendChild(div);
+      }
+    }
+
+    document.getElementById("predict").onclick = predict;
+  </script>
+</body>
+</html>
